@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Tracker на телефоне</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        #container { position: relative; width: 100vw; height: 100vh; }
+        video, canvas {
+            position: absolute; top: 0; left: 0;
+            width: 100%; height: 100%; object-fit: cover;
+        }
+        /* Зеркальное отображение для фронталки */
+        #webcam, #output_canvas { transform: scaleX(-1); }
+        #loading {
+            position: absolute; color: white; top: 50%; left: 50%;
+            transform: translate(-50%, -50%); font-size: 1.5rem; z-index: 10;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm/vision_bundle.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<div id="container">
+    <div id="loading">Загрузка нейросети...</div>
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="output_canvas"></canvas>
+</div>
+
+<script type="module">
+import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/vision_bundle.js";
+
+const video = document.getElementById("webcam");
+const canvas = document.getElementById("output_canvas");
+const canvasCtx = canvas.getContext("2d");
+const loadingDiv = document.getElementById("loading");
+let handLandmarker = undefined;
+
+// 1. Инициализация MediaPipe
+async function initHandTracking() {
+    const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
+    );
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker_bundle/float16/1/hand_landmarker_bundle.task",
+            delegate: "GPU" // Используем GPU телефона для скорости
+        },
+        runningMode: "VIDEO",
+        numHands: 2
+    });
+    loadingDiv.style.display = "none";
+    startCamera();
+}
+
+// 2. Запуск камеры телефона
+function startCamera() {
+    const constraints = {
+        video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }
+    };
+    navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+        video.srcObject = stream;
+        video.addEventListener("loadeddata", predictWebcam);
+    }).catch(err => console.error("Ошибка камеры:", err));
+}
+
+// 3. Цикл распознавания и отрисовки
+let lastVideoTime = -1;
+async function predictWebcam() {
+    // Подгоняем размер холста под видео
+    if (canvas.width !== video.videoWidth) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+    }
+
+    let startTimeMs = performance.now();
+    if (lastVideoTime !== video.currentTime) {
+        lastVideoTime = video.currentTime;
+        const results = handLandmarker.detectForVideo(video, startTimeMs);
+
+        canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        if (results.landmarks) {
+            for (const landmarks of results.landmarks) {
+                // Рисуем точки
+                for (const landmark of landmarks) {
+                    const x = landmark.x * canvas.width;
+                    const y = landmark.y * canvas.height;
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(x, y, 5, 0, 2 * Math.PI);
+                    canvasCtx.fillStyle = "#00FF00";
+                    canvasCtx.fill();
+                }
+            }
+        }
+    }
+    requestAnimationFrame(predictWebcam);
+}
+
+initHandTracking();
+</script>
+</body>
+</html>

@@ -2,9 +2,8 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <!-- Настройка вьюпорта для мобильных устройств -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Трекинг человека</title>
+    <title>Легкий трекинг</title>
     <style>
         body, html {
             margin: 0;
@@ -15,7 +14,6 @@
             overflow: hidden;
             font-family: Arial, sans-serif;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
         }
@@ -29,30 +27,23 @@
             border-radius: 15px;
             cursor: pointer;
             z-index: 10;
-            box-shadow: 0 4px 15px rgba(0, 122, 255, 0.4);
-            transition: transform 0.2s;
-        }
-
-        #startBtn:active {
-            transform: scale(0.95);
         }
 
         #gameContainer {
             display: none;
             position: relative;
             width: 100vw;
-            height: 100vh; /* Занимает весь экран */
+            height: 100vh;
             background-color: #000;
         }
 
-        /* Канвас растянут на весь контейнер (создает пропорции экрана телефона) */
         #outputCanvas {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            object-fit: cover; /* Важно для сохранения пропорций камеры */
+            object-fit: cover;
         }
 
         video {
@@ -76,19 +67,15 @@
 </head>
 <body>
 
-    <button id="startBtn">Открыть трекинг на весь экран</button>
+    <button id="startBtn">Открыть на весь экран</button>
 
     <div id="gameContainer">
         <button id="exitBtn">Выйти</button>
-        <!-- Скрытое видео для потока с камеры -->
         <video id="inputVideo" playsinline></video>
-        <!-- Канвас для отрисовки картинки и квадратов -->
         <canvas id="outputCanvas"></canvas>
     </div>
 
-    <!-- Подключаем MediaPipe через CDN -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 
     <script>
@@ -99,125 +86,98 @@
         const canvasElement = document.getElementById('outputCanvas');
         const canvasCtx = canvasElement.getContext('2d');
 
-        // 1. Обработчик кнопки старта (Полноэкранный режим)
+        let cameraInstance = null;
+
         startBtn.addEventListener('click', () => {
             gameContainer.style.display = 'block';
             startBtn.style.display = 'none';
-
-            // Запрос полноэкранного режима
-            if (gameContainer.requestFullscreen) {
-                gameContainer.requestFullscreen();
-            } else if (gameContainer.webkitRequestFullscreen) { /* iOS Safari */
-                gameContainer.webkitRequestFullscreen();
-            }
-
-            // Инициализируем камеру и трекинг
+            if (gameContainer.requestFullscreen) gameContainer.requestFullscreen();
+            else if (gameContainer.webkitRequestFullscreen) gameContainer.webkitRequestFullscreen();
             initCamera();
         });
 
-        // Выход из полноэкранного режима
         exitBtn.addEventListener('click', () => {
-            if (document.exitFullscreen) {
-                document.exitFullscreen();
-            } else if (document.webkitExitFullscreen) {
-                document.webkitExitFullscreen();
-            }
+            if (document.exitFullscreen) document.exitFullscreen();
+            else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
         });
 
-        // Слушатель закрытия полноэкранного режима
         document.addEventListener('fullscreenchange', () => {
             if (!document.fullscreenElement) {
                 gameContainer.style.display = 'none';
                 startBtn.style.display = 'block';
-                // Останавливаем камеру при выходе (опционально)
-                if (videoElement.srcObject) {
-                    videoElement.srcObject.getTracks().forEach(track => track.stop());
-                }
+                stopCamera();
             }
         });
 
-        // 2. Настройка MediaPipe Pose
-        const pose = new Pose({
-            locateFile: (file) => {
-                return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        function stopCamera() {
+            if (cameraInstance) {
+                cameraInstance.stop();
+                cameraInstance = null;
             }
+            if (videoElement.srcObject) {
+                videoElement.srcObject.getTracks().forEach(track => track.stop());
+                videoElement.srcObject = null;
+            }
+        }
+
+        // Настройка максимально легкой модели Pose
+        const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
         });
 
         pose.setOptions({
-            modelComplexity: 1, // 0 (_lite_), 1 (full), 2 (heavy). 1 оптимально для телефонов
+            modelComplexity: 0, // 0 = LITE (только базовые точки, минимум лагов)
             smoothLandmarks: true,
-            enableSegmentation: false,
+            enableSegmentation: false, // Отключено (съедает много ресурсов)
             minDetectionConfidence: 0.5,
             minTrackingConfidence: 0.5
         });
 
-        // 3. Обработка результатов от MediaPipe
+        let isProcessing = false;
+
         pose.onResults((results) => {
-            // Подгоняем размер канваса под размер видео (с учетом пропорций экрана)
-            canvasElement.width = results.image.width;
-            canvasElement.height = results.image.height;
+            isProcessing = false; // Сигнализируем, что обработка завершена
 
-            // Очищаем и рисуем кадр с камеры
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-            if (results.poseLandmarks) {
-                // Вызываем функцию отрисовки квадратов
-                drawBodyBoundingBoxes(results.poseLandmarks);
-            }
-            canvasCtx.restore();
-        });
-
-        // 4. Функция отрисовки квадратов (Голова и Тело)
-        function drawBodyBoundingBoxes(landmarks) {
-            // Индексы точек MediaPipe:
-            // 0 - нос, 7/8 - уши, 11/12 - плечи, 23/24 - таз
-            const nose = landmarks[0];
-            const leftEar = landmarks[7];
-            const rightEar = landmarks[8];
-            const leftShoulder = landmarks[11];
-            const rightShoulder = landmarks[12];
-            const leftHip = landmarks[23];
-            const rightHip = landmarks[24];
+            if (!results.poseLandmarks) return;
 
             const w = canvasElement.width;
             const h = canvasElement.height;
 
-            // --- РАСЧЕТ И ОТРИСОВКА ГОЛОВЫ ---
-            // Берем среднюю точку между ушами для центра головы по X
-            let headCenterX = ((leftEar.x + rightEar.x) / 2) * w;
-            // Нос как верхняя точка
-            let headTopY = (nose.y - 0.1) * h; // Немного поднимаем квадрат выше носа
-            // Плечи как нижняя граница головы
-            let headBottomY = ((leftShoulder.y + rightShoulder.y) / 2) * h;
+            // Рисуем видео (оптимизированно)
+            canvasCtx.drawImage(results.image, 0, 0, w, h);
+
+            const lm = results.poseLandmarks;
             
+            // В Lite-модели индексы те же: 0-нос, 7/8-уши, 11/12-плечи, 23/24-таз
+            const nose = lm[0];
+            const leftEar = lm[7];
+            const rightEar = lm[8];
+            const leftShoulder = lm[11];
+            const rightShoulder = lm[12];
+            const leftHip = lm[23];
+            const rightHip = lm[24];
+
+            // --- ГОЛОВА ---
+            let headCenterX = ((leftEar.x + rightEar.x) / 2) * w;
+            let headTopY = (nose.y - 0.1) * h; 
+            let headBottomY = ((leftShoulder.y + rightShoulder.y) / 2) * h;
             let headHeight = headBottomY - headTopY;
-            let headWidth = headHeight * 0.8; // Делаем голову немного более вытянутой вниз
+            let headWidth = headHeight * 0.8;
 
-            canvasCtx.strokeStyle = '#00FF00'; // Зеленый цвет для головы
+            canvasCtx.strokeStyle = '#00FF00';
             canvasCtx.lineWidth = 3;
-            canvasCtx.strokeRect(
-                headCenterX - headWidth / 2, 
-                headTopY, 
-                headWidth, 
-                headHeight
-            );
+            canvasCtx.strokeRect(headCenterX - headWidth / 2, headTopY, headWidth, headHeight);
 
-            // --- РАСЧЕТ И ОТРИСОВКА ТЕЛА ---
-            // Границы по осям X (от левого плеча/таза к правому)
+            // --- ТЕЛО ---
             let bodyMinX = Math.min(leftShoulder.x, leftHip.x) * w;
             let bodyMaxX = Math.max(rightShoulder.x, rightHip.x) * w;
-            
-            // Границы по оси Y (от плеч до таза)
             let bodyMinY = Math.min(leftShoulder.y, rightShoulder.y) * h;
             let bodyMaxY = Math.max(leftHip.y, rightHip.y) * h;
 
-            // Добавляем отступы (padding), чтобы квадрат не впритык
             let paddingX = (bodyMaxX - bodyMinX) * 0.3; 
             let paddingY = (bodyMaxY - bodyMinY) * 0.2;
 
-            canvasCtx.strokeStyle = '#FF0000'; // Красный цвет для тела
+            canvasCtx.strokeStyle = '#FF0000';
             canvasCtx.lineWidth = 3;
             canvasCtx.strokeRect(
                 bodyMinX - paddingX, 
@@ -225,19 +185,27 @@
                 (bodyMaxX - bodyMinX) + (paddingX * 2), 
                 (bodyMaxY - bodyMinY) + (paddingY * 2)
             );
-        }
+        });
 
-        // 5. Запуск камеры
         function initCamera() {
-            const camera = new Camera(videoElement, {
+            // Задаем размер канваса один раз при старте
+            canvasElement.width = 640;
+            canvasElement.height = 480;
+
+            cameraInstance = new Camera(videoElement, {
                 onFrame: async () => {
+                    // ВАЖНАЯ ОПТИМИЗАЦИЯ: 
+                    // Не отправляем новый кадр в нейросеть, пока она не закончила обрабатывать предыдущий.
+                    // Это спасает слабые телефоны от зависания.
+                    if (isProcessing) return; 
+                    isProcessing = true;
                     await pose.send({ image: videoElement });
                 },
                 width: 640,
-                height: 480, // Пропорция 4:3, как вы и просили
-                facingMode: 'user' // Фронтальная камера
+                height: 480,
+                facingMode: 'user'
             });
-            camera.start();
+            cameraInstance.start();
         }
     </script>
 </body>

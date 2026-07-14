@@ -3,73 +3,71 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Легкий скелет</title>
+    <title>Air Body Runner</title>
     <style>
         body, html {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            background-color: #000;
-            overflow: hidden;
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #000; overflow: hidden;
             font-family: Arial, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            display: flex; align-items: center; justify-content: center;
         }
-
         #startBtn {
-            padding: 20px 40px;
-            font-size: 20px;
-            background-color: #007AFF;
-            color: white;
-            border: none;
-            border-radius: 15px;
-            cursor: pointer;
+            padding: 20px 40px; font-size: 20px; background-color: #007AFF;
+            color: white; border: none; border-radius: 15px; cursor: pointer; z-index: 10;
         }
-
         #gameContainer {
-            display: none;
-            position: relative;
-            width: 100vw;
-            height: 100vh;
-            background-color: #000;
+            display: none; position: relative; width: 100vw; height: 100vh; background-color: #000;
         }
-
         #outputCanvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover;
         }
-
         video { display: none; }
-
+        #uiOverlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 15;
+        }
+        #scoreDisplay {
+            position: absolute; top: 20px; right: 20px;
+            color: white; font-size: 24px; font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
         #exitBtn {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            padding: 10px 15px;
-            font-size: 16px;
-            background-color: rgba(255, 59, 48, 0.8);
-            color: white;
-            border: none;
-            border-radius: 10px;
-            z-index: 20;
-            cursor: pointer;
+            position: absolute; top: 20px; left: 20px;
+            padding: 10px 15px; font-size: 16px;
+            background-color: rgba(255, 59, 48, 0.8); color: white;
+            border: none; border-radius: 10px; z-index: 20; cursor: pointer;
+            pointer-events: auto;
+        }
+        #gameOverScreen {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8); color: white; padding: 30px;
+            border-radius: 15px; text-align: center; display: none; z-index: 25;
+            pointer-events: auto;
+        }
+        #restartBtn {
+            margin-top: 15px; padding: 10px 20px; font-size: 18px;
+            background-color: #34C759; color: white; border: none; border-radius: 10px; cursor: pointer;
         }
     </style>
 </head>
 <body>
 
-    <button id="startBtn">Открыть на весь экран</button>
+    <button id="startBtn">Играть на весь экран</button>
 
     <div id="gameContainer">
         <button id="exitBtn">Выйти</button>
         <video id="inputVideo" playsinline></video>
         <canvas id="outputCanvas"></canvas>
+        
+        <div id="uiOverlay">
+            <div id="scoreDisplay">Очки: 0</div>
+        </div>
+
+        <div id="gameOverScreen">
+            <h2>Вы проиграли!</h2>
+            <p>Ваш счет: <span id="finalScore">0</span></p>
+            <button id="restartBtn">Заново</button>
+        </div>
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
@@ -82,12 +80,23 @@
         const videoElement = document.getElementById('inputVideo');
         const canvasElement = document.getElementById('outputCanvas');
         const canvasCtx = canvasElement.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const gameOverScreen = document.getElementById('gameOverScreen');
+        const finalScoreSpan = document.getElementById('finalScore');
+        const restartBtn = document.getElementById('restartBtn');
 
         let cameraInstance = null;
         let lastFrameTime = 0;
-        // ЖЕСТКОЕ ОГРАНИЧЕНИЕ FPS для телефона 2016 года (например, 20 кадров в секунду)
-        // Если все еще лагает, поменяйте 50 на 100 (будет 10 FPS, но без зависаний)
-        const targetFrameDelay = 1000 / 20; 
+        const targetFrameDelay = 1000 / 20; // 20 FPS
+
+        // --- ПЕРЕМЕННЫЕ ИГРЫ ---
+        let gameActive = false;
+        let score = 0;
+        let playerX = 0.5; // Позиция игрока (от 0 до 1)
+        let playerY = 0.5;
+        let obstacles = [];
+        let obstacleSpeed = 0.01; // Скорость падения
+        let spawnTimer = 0;
 
         startBtn.addEventListener('click', () => {
             gameContainer.style.display = 'block';
@@ -95,18 +104,23 @@
             if (gameContainer.requestFullscreen) gameContainer.requestFullscreen();
             else if (gameContainer.webkitRequestFullscreen) gameContainer.webkitRequestFullscreen();
             initCamera();
+            resetGame();
         });
 
         exitBtn.addEventListener('click', () => {
             if (document.exitFullscreen) document.exitFullscreen();
             else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+            gameActive = false;
         });
+
+        restartBtn.addEventListener('click', resetGame);
 
         document.addEventListener('fullscreenchange', () => {
             if (!document.fullscreenElement) {
                 gameContainer.style.display = 'none';
                 startBtn.style.display = 'block';
                 stopCamera();
+                gameActive = false;
             }
         });
 
@@ -118,12 +132,28 @@
             }
         }
 
+        function resetGame() {
+            score = 0;
+            obstacles = [];
+            obstacleSpeed = 0.01;
+            spawnTimer = 0;
+            gameActive = true;
+            gameOverScreen.style.display = 'none';
+            scoreDisplay.innerText = "Очки: 0";
+        }
+
+        function triggerGameOver() {
+            gameActive = false;
+            gameOverScreen.style.display = 'block';
+            finalScoreSpan.innerText = score;
+        }
+
         const pose = new Pose({
             locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
         });
 
         pose.setOptions({
-            modelComplexity: 0, // Самая легкая модель
+            modelComplexity: 0, 
             smoothLandmarks: true,
             enableSegmentation: false,
             minDetectionConfidence: 0.5,
@@ -134,12 +164,10 @@
 
         pose.onResults((results) => {
             isProcessing = false;
-            if (!results.poseLandmarks) return;
-
             const w = canvasElement.width;
             const h = canvasElement.height;
 
-            // ИСПРАВЛЕНИЕ ЗЕРКАЛА: Отзеркаливаем канвас по горизонтали
+            // Отрисовка зеркального фона
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, w, h);
             canvasCtx.translate(w, 0);
@@ -147,70 +175,136 @@
             canvasCtx.drawImage(results.image, 0, 0, w, h);
             canvasCtx.restore();
 
+            if (!results.poseLandmarks) return;
             const lm = results.poseLandmarks;
 
-            // Подключения для базового скелета (только торс, руки и ноги)
-            // Индексы: 0-нос, 11-12 плечи, 13-14 локти, 15-16 кисти, 23-24 таз, 25-26 колени, 27-28 стопы
+            // --- ЛОГИКА УПРАВЛЕНИЯ ---
+            // Берем правое плечо (12) и правую кисть (16)
+            const rShoulder = lm[12];
+            const rWrist = lm[16];
+
+            // Если правая рука видна, используем её как джойстик
+            if (rWrist.visibility > 0.5) {
+                // Инвертируем X для зеркала и нормализуем от 0 до 1
+                playerX = 1 - rWrist.x;
+                playerY = rWrist.y;
+                
+                // Ограничиваем, чтобы игрок не выходил за края экрана
+                playerX = Math.max(0.05, Math.min(0.95, playerX));
+                playerY = Math.max(0.05, Math.min(0.95, playerY));
+            } else if (rShoulder.visibility > 0.5) {
+                // Если руку опустили или скрыли, управляем наклонами корпуса (плечами)
+                // Вычисляем центры между плечами и тазом для определения наклона
+                const lShoulder = lm[11];
+                const torsoCenterX = (lShoulder.x + rShoulder.x) / 2;
+                
+                playerX = 1 - torsoCenterX; // Наклон корпуса управляет X
+            }
+
+            // --- ИГРОВАЯ ЛОГИКА ---
+            if (gameActive) {
+                spawnTimer++;
+                // Усложняем со временем
+                if (spawnTimer % 100 === 0) obstacleSpeed += 0.002;
+
+                // Спавн препятствий
+                if (spawnTimer % 30 === 0) {
+                    obstacles.push({
+                        x: Math.random() * 0.8 + 0.1, // Случайная X (от 10% до 90%)
+                        y: -0.1, // Стартуют сверху за экраном
+                        size: 0.05 + Math.random() * 0.05 // Случайный размер
+                    });
+                }
+
+                // Обновление препятствий
+                for (let i = obstacles.length - 1; i >= 0; i--) {
+                    let obs = obstacles[i];
+                    obs.y += obstacleSpeed; // Падают вниз
+
+                    // Если упали за экран — удаляем и даем очки
+                    if (obs.y > 1.1) {
+                        obstacles.splice(i, 1);
+                        score += 10;
+                        scoreDisplay.innerText = "Очки: " + score;
+                        continue;
+                    }
+
+                    // Проверка столкновения (AABB)
+                    let pSize = 0.04; // Размер игрока
+                    if (Math.abs(playerX - obs.x) < (pSize + obs.size) && 
+                        Math.abs(playerY - obs.y) < (pSize + obs.size)) {
+                        triggerGameOver();
+                    }
+                }
+            }
+
+            // --- ОТРИСОВКА ИГРОВЫХ ЭЛЕМЕНТОВ ---
+            // Рисуем препятствия (Красные квадраты)
+            canvasCtx.fillStyle = 'rgba(255, 0, 0, 0.7)';
+            for (let obs of obstacles) {
+                canvasCtx.fillRect(
+                    obs.x * w - (obs.size * w / 2), 
+                    obs.y * h - (obs.size * h / 2), 
+                    obs.size * w, 
+                    obs.size * h
+                );
+            }
+
+            // Рисуем игрока (Зеленый квадрат)
+            if (gameActive) {
+                let pSize = 0.04;
+                canvasCtx.fillStyle = '#00FF00';
+                canvasCtx.fillRect(
+                    playerX * w - (pSize * w / 2), 
+                    playerY * h - (pSize * h / 2), 
+                    pSize * w, 
+                    pSize * h
+                );
+                
+                // Рисуем тонкую линию от плеча до "игрока", чтобы было понятно, что мы управляем рукой
+                if (rWrist.visibility > 0.5 && rShoulder.visibility > 0.5) {
+                    canvasCtx.strokeStyle = 'rgba(0, 255, 0, 0.5)';
+                    canvasCtx.lineWidth = 2;
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo((1 - rShoulder.x) * w, rShoulder.y * h);
+                    canvasCtx.lineTo(playerX * w, playerY * h);
+                    canvasCtx.stroke();
+                }
+            }
+
+            // --- ОТРИСОВКА СКЕЛЕТА (сделана полупрозрачной, чтобы не мешать игре) ---
             const connections = [
-                [11, 12], // Плечи
-                [11, 13], [13, 15], // Левая рука
-                [12, 14], [14, 16], // Правая рука
-                [11, 23], [12, 24], // Бока торса
-                [23, 24], // Таз
-                [23, 25], [25, 27], // Левая нога
-                [24, 26], [26, 28]  // Правая нога
+                [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+                [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]
             ];
 
-            // НАСТРОЙКИ ОТРИСОВКИ (Тонкие линии = быстрее отрисовка)
-            canvasCtx.strokeStyle = '#00FF00';
-            canvasCtx.lineWidth = 2;
+            canvasCtx.strokeStyle = 'rgba(255, 255, 255, 0.3)'; // Белый полупрозрачный
+            canvasCtx.lineWidth = 1;
 
-            // Рисуем линии скелета
             for (const [i, j] of connections) {
-                const pointA = lm[i];
-                const pointB = lm[j];
-                
-                // Проверяем, видны ли точки (видимость > 0.5)
+                const pointA = lm[i]; const pointB = lm[j];
                 if (pointA.visibility > 0.5 && pointB.visibility > 0.5) {
                     canvasCtx.beginPath();
-                    // Отзеркаливаем координаты по X (умножаем на -1 и прибавляем ширину)
                     canvasCtx.moveTo((1 - pointA.x) * w, pointA.y * h);
                     canvasCtx.lineTo((1 - pointB.x) * w, pointB.y * h);
                     canvasCtx.stroke();
                 }
             }
-
-            // Рисуем точки суставов (маленькие кружки)
-            canvasCtx.fillStyle = '#FF0000';
-            const keyPoints = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
-            for (const i of keyPoints) {
-                const point = lm[i];
-                if (point.visibility > 0.5) {
-                    canvasCtx.beginPath();
-                    canvasCtx.arc((1 - point.x) * w, point.y * h, 4, 0, 2 * Math.PI);
-                    canvasCtx.fill();
-                }
-            }
         });
 
         function initCamera() {
-            // Уменьшаем разрешение! 320x240 (4:3) сильно разгрузит телефон 2016 года
             canvasElement.width = 320;
             canvasElement.height = 240;
 
             cameraInstance = new Camera(videoElement, {
                 onFrame: async () => {
                     const now = performance.now();
-                    // Проверяем, прошло ли достаточно времени для следующего кадра
                     if (now - lastFrameTime < targetFrameDelay || isProcessing) return; 
-                    
                     lastFrameTime = now;
                     isProcessing = true;
                     await pose.send({ image: videoElement });
                 },
-                width: 320,   // Снижаем разрешение потока с камеры
-                height: 240,  // Это даст огромный прирост производительности
-                facingMode: 'user'
+                width: 320, height: 240, facingMode: 'user'
             });
             cameraInstance.start();
         }
